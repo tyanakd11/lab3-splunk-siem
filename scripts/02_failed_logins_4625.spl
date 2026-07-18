@@ -1,0 +1,7 @@
+```Failed Login Attempts (EventCode 4625) — groups failed logons by account and source
+machine. A single account with several failures in a short window suggests brute force;
+many accounts with 1-2 failures each suggests a password spray attack.```
+
+index=windows_logs sourcetype=WinEventLog:Security EventCode=4625
+| stats count by Account_Name, Workstation_Name
+| sort -count

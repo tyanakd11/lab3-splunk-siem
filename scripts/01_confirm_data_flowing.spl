@@ -1,0 +1,5 @@
+```Confirm Data is Flowing — basic pulse check that the Universal Forwarder is delivering
+events from dc01 into the windows_logs index end to end. Run this first before any
+other search in this lab.```
+
+index=windows_logs | head 100

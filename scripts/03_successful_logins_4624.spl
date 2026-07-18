@@ -1,0 +1,7 @@
+```Successful Logins (EventCode 4624) — groups successful logons by account and
+Logon_Type (how the user logged in: interactive, network, service, or remote/RDP),
+so unexpected remote logons stand out.```
+
+index=windows_logs sourcetype=WinEventLog:Security EventCode=4624
+| stats count by Account_Name, Logon_Type
+| sort -count

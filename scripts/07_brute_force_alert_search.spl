@@ -1,0 +1,8 @@
+```Brute-Force Alert Search — the detection behind the "Potential Brute Force - High
+Failure Count" alert, scheduled to run every 15 minutes. Flags any account with more
+than 10 failed logins in the search window and notifies the moment it fires, rather
+than waiting for a human to notice on a dashboard.```
+
+index=windows_logs sourcetype=WinEventLog:Security EventCode=4625
+| stats count as failures by Account_Name
+| where failures > 10

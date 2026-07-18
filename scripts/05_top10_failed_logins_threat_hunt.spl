@@ -1,0 +1,8 @@
+```Top 10 Failed Login Usernames — Threat Hunting — surfaces the worst-offending accounts
+in the last 24 hours. Failed logins against usernames that don't actually exist in
+Active Directory is a sign of account enumeration: an attacker guessing valid usernames.```
+
+index=windows_logs sourcetype=WinEventLog:Security EventCode=4625 earliest=-24h
+| stats count as failures by Account_Name
+| sort -failures
+| head 10

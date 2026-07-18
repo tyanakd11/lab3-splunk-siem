@@ -1,0 +1,7 @@
+```Account Lockouts (EventCode 4740) — lists lockout events newest-first. Repeated
+lockouts on one account points to brute force; lockouts spread across many accounts
+points to password spraying.```
+
+index=windows_logs sourcetype=WinEventLog:Security EventCode=4740
+| table _time, Account_Name, Caller_Computer_Name
+| sort -_time

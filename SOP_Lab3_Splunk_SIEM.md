@@ -4,7 +4,7 @@
 | :---- | :---- |
 | **Author** | Sammatha Adams |
 | **Lab Series** | Home Lab 5-Series — Lab 3 of 5 |
-| **Environment** | macOS (local) · Azure (Ubuntu 22.04 VM · Windows Server VM from Lab 1) |
+| **Environment** | macOS (local) · Azure (Ubuntu 22.04 VM `splunk-vm` · Windows Server 2022 VM `dc01`, both in `rg-splunk-lab3`) |
 | **Certifications** | CompTIA Security+ · CySA+ · Splunk Core Certified User |
 | **Date** | 2026-06-29 |
 
@@ -12,21 +12,31 @@
 
 ## PURPOSE
 
-This lab deploys Splunk Enterprise as a SIEM (Security Information and Event Management) platform on an Azure Ubuntu VM, configures the Windows Server VM from Lab 1 to forward Windows Event Logs to Splunk, and demonstrates core SOC analyst skills: log ingestion, SPL searching, dashboard building, and automated alerting.
+This lab deploys Splunk Enterprise as a SIEM (Security Information and Event Management) platform on an Azure Ubuntu VM, configures a Windows Server domain controller VM to forward Windows Event Logs to Splunk, and demonstrates core SOC analyst skills: log ingestion, SPL searching, dashboard building, and automated alerting.
 
 Completing this lab gives you demonstrable, hands-on Splunk experience that appears on job descriptions for SOC Analyst, Security Engineer, and Incident Responder roles.
 
 ---
 
+## NOTE — Why the Domain Controller Was Rebuilt as `dc01` in This Resource Group
+
+Lab 1 originally built its Active Directory domain controller in its own resource group. When this lab's Splunk VM (`splunk-vm`) was created in `rg-splunk-lab3` without an explicit `--vnet-name`, Azure auto-created a **new, separate** virtual network scoped to that resource group. Since the original Lab 1 VM lived in a different resource group, it was sitting on a different VNet — the two machines could not reach each other over private IPs, which this lab's forwarder setup depends on.
+
+**The fix:** rebuild the domain controller as a new VM named `dc01` inside `rg-splunk-lab3` — the same resource group as `splunk-vm`. Azure CLI's default VNet selection reuses an existing VNet already in a resource group rather than creating a second one, so `dc01` lands on the same VNet as `splunk-vm` automatically, with no VNet peering step required.
+
+**Trade-off to know:** `dc01` is a blank Windows Server — none of Lab 1's original AD configuration (domain, OUs, users, GPOs) carries over automatically. Section 3.5 and Section 3.6 below walk through re-promoting it as a domain controller. Your original Lab 1 VM/resource group is untouched and still billing until you stop or delete it — decide that once `dc01` is verified working.
+
+---
+
 ## NOTE — What Gets Installed Where
 
-This lab spans two machines. Do not confuse them.
+This lab spans two machines, both inside `rg-splunk-lab3`. Do not confuse them.
 
 | Machine | What you do here |
 | :---- | :---- |
-| **Your Mac (local)** | Run Azure CLI commands, SSH into VMs, manage the Git repo |
-| **Ubuntu VM (new — Splunk server)** | Install Splunk Enterprise, receive and index logs |
-| **Windows Server VM (from Lab 1)** | Install Splunk Universal Forwarder, configure inputs.conf, send logs |
+| **Your Mac (local)** | Run Azure CLI commands, SSH/RDP into VMs, manage the Git repo |
+| **`splunk-vm` (Ubuntu — Splunk server)** | Install Splunk Enterprise, receive and index logs |
+| **`dc01` (Windows Server 2022 — domain controller)** | Promote to a domain controller, install Splunk Universal Forwarder, configure inputs.conf, send logs |
 
 ---
 
@@ -34,11 +44,11 @@ This lab spans two machines. Do not confuse them.
 
 Before starting, confirm you have:
 
-- [ ] Completed Lab 1 (Active Directory on Azure Windows Server VM) — the Windows Server VM must be running  
 - [ ] Azure CLI installed on your Mac (`az --version` should return output)  
 - [ ] GitHub CLI installed on your Mac (`gh --version` should return output)  
 - [ ] Splunk Enterprise downloaded for Linux (`.deb` file) — see Section 2 below  
 - [ ] Your Mac Terminal open and ready
+- [ ] Decided on a domain name for `dc01` (this SOP uses `corplab.local` as a placeholder — swap in your own if you'd rather match Lab 1's original domain name)
 
 **Mac users:** You do not need PuTTY or any additional SSH tool. macOS has SSH built in. You will run all remote commands directly from your Terminal app.
 
@@ -274,7 +284,7 @@ Splunk requires a free account before you can download. Use a temporary email �
 
 ## SECTION 3 — DEPLOY THE SPLUNK UBUNTU VM IN AZURE
 
-Running Splunk on an Azure VM means it stays running when your laptop is closed, it's accessible from anywhere, and it can receive logs from your Lab 1 Windows Server over the private Azure network.
+Running Splunk on an Azure VM means it stays running when your laptop is closed, it's accessible from anywhere, and it can receive logs from `dc01` over the private Azure network.
 
 ### 3.1 Log in to Azure from your Mac Terminal
 
@@ -284,45 +294,27 @@ az login
 
 ### 3.2 Create a resource group for this lab
 
-az group create \\
-
-  --name rg-splunk-lab3 \\
-
-  --location eastus
+az group create --name rg-splunk-lab3 --location eastus
 
 **What this does:** Creates a logical container in Azure called a resource group named `rg-splunk-lab3`. All resources you create for this lab (the VM, network card, disk, etc.) go inside this group. Keeping Lab 3 resources in their own group makes cleanup easy — you delete the group and everything inside it disappears.
 
-`--location eastus` sets the Azure data center region. Use `eastus` to match your Lab 1 VM for lowest latency between VMs.
+`--location eastus` sets the Azure data center region. Both VMs in this lab (`splunk-vm` and `dc01`, created below) go in this same region and resource group for lowest latency and so they land on the same virtual network.
 
 ### 3.3 Create the Ubuntu VM
 
-az vm create \\
-
-  --resource-group rg-splunk-lab3 \\
-
-  --name splunk-vm \\
-
-  --image Ubuntu2204 \\
-
-  --size Standard_B2s \\
-
-  --admin-username azureuser \\
-
-  --authentication-type password \\
-
-  --admin-password 'YourStrongPassword123!' \\
-
-  --public-ip-sku Standard
+az vm create --resource-group rg-splunk-lab3 --name splunk-vm --image Ubuntu2204 --size Standard_D2s_v3 --admin-username azureuser --authentication-type password --admin-password 'YourStrongPassword123!' --public-ip-sku Standard
 
 **What each flag does:**
 
 - `--name splunk-vm` — the name of your VM inside Azure  
 - `--image Ubuntu2204` — Ubuntu 22.04 LTS, the OS Splunk officially supports on Linux  
-- `--size Standard_B2s` — 2 vCPUs and 4GB RAM. Splunk requires **at least 4GB RAM** — do not go smaller  
+- `--size Standard_D2s_v3` — 2 vCPUs and 8GB RAM. Splunk requires **at least 4GB RAM**, so this size has comfortable headroom  
 - `--admin-username azureuser` — the Linux username you'll use to log in via SSH  
 - `--authentication-type password` — use password auth (simpler for a lab environment)  
 - `--admin-password` — **replace** `YourStrongPassword123!` with a real strong password and write it down  
 - `--public-ip-sku Standard` — assigns a static public IP address so you can always reach the VM
+
+**A note on VM size:** the smaller, cheaper `Standard_B2s` (2 vCPU / 4GB RAM — Splunk's bare minimum) is the size you'd normally reach for first in a lab like this. In practice, Azure returned a `SkuNotAvailable` capacity error for `Standard_B2s` in `eastus` at deploy time — a common situation with burstable B-series sizes in busy regions, especially on trial subscriptions. `Standard_D2s_v3` (the same size used for `dc01`) deployed without issue and gives extra headroom besides. If you hit the same capacity error, don't worry — it's an Azure inventory issue, not a mistake in the command — just swap in a different size.
 
 **Note:** When this command finishes, it outputs a JSON block containing `"publicIpAddress"`. Copy that IP — you'll use it throughout this lab. You can also retrieve it anytime with:
 
@@ -332,33 +324,61 @@ az vm show -d -g rg-splunk-lab3 -n splunk-vm --query publicIps -o tsv
 
 You need three ports open. Each `az vm open-port` command punches a hole through Azure's firewall (the Network Security Group) for a specific port.
 
-az vm open-port \\
-
-  --resource-group rg-splunk-lab3 \\
-
-  --name splunk-vm \\
-
-  --port 8000 \\
-
-  --priority 1001
+az vm open-port --resource-group rg-splunk-lab3 --name splunk-vm --port 8000 --priority 1001
 
 **What this does:** Opens port **8000** — the Splunk Web UI port. This is how you'll access Splunk's browser interface from your Mac. You navigate to `http://YOUR_VM_IP:8000` to use Splunk.
 
-az vm open-port \\
-
-  --resource-group rg-splunk-lab3 \\
-
-  --name splunk-vm \\
-
-  --port 9997 \\
-
-  --priority 1002
+az vm open-port --resource-group rg-splunk-lab3 --name splunk-vm --port 9997 --priority 1002
 
 **What this does:** Opens port **9997** — the Splunk forwarder receiving port. The Universal Forwarder on your Windows Server VM sends logs to this port. Without this open, no logs will arrive.
 
 **Security note:** In a real deployment, port 9997 would be restricted to your VNet IP range only (e.g., 10.0.0.0/16) so the public internet cannot try to send data to your Splunk instance. For this lab, opening it is acceptable since there's no sensitive data.
 
 Port 22 (SSH) is open by default when you create an Azure VM.
+
+### 3.5 Create the domain controller VM (dc01)
+
+This VM replaces the Lab 1 domain controller for this lab. It lives in the same resource group as `splunk-vm` — and therefore, per the note above, the same virtual network.
+
+az vm create --resource-group rg-splunk-lab3 --name dc01 --image Win2022Datacenter --size Standard_D2s_v3 --admin-username azureuser --admin-password 'YourStrongPassword123!' --public-ip-sku Standard
+
+**What each flag does:**
+
+- `--name dc01` — short for "domain controller 01," the conventional name for the first DC in a domain  
+- `--image Win2022Datacenter` — Windows Server 2022 Datacenter edition, which includes the Active Directory Domain Services role  
+- `--size Standard_D2s_v3` — 2 vCPUs and 8GB RAM. AD DS is more resource-hungry than a plain file/app server; this size gives enough headroom  
+- `--admin-username` / `--admin-password` — the local Windows administrator account you'll use to RDP in. Use the same strong-password practice as `splunk-vm` — replace the placeholder password with a real one  
+- No `--vnet-name` flag — this is deliberate. Leaving it out lets Azure CLI attach `dc01` to the VNet already created for `splunk-vm` in this resource group, instead of creating a second, disconnected network
+
+**Get its public IP** (needed for RDP):
+
+az vm show -d -g rg-splunk-lab3 -n dc01 --query publicIps -o tsv
+
+**Optional sanity check — confirm both VMs share a VNet:**
+
+az vm nic list --resource-group rg-splunk-lab3 --vm-name dc01 --query "[].id" -o tsv
+
+Run the same command with `--vm-name splunk-vm` and compare — the VNet name embedded in both outputs should match.
+
+### 3.6 Promote dc01 to a domain controller
+
+RDP into `dc01` from your Mac using Microsoft Remote Desktop (free on the Mac App Store), using the public IP from 3.5 and the admin username/password from the `az vm create` command in 3.5.
+
+Once connected, open **PowerShell as Administrator** on `dc01` and install the AD DS role:
+
+Install-WindowsFeature -Name AD-Domain-Services -IncludeManagementTools
+
+**What this does:** Installs the Active Directory Domain Services role and its management tools (like Active Directory Users and Computers). This is the same role Lab 1 installed — you're redoing that step on the new VM.
+
+Then promote the server to a domain controller in a new forest:
+
+Install-ADDSForest -DomainName "corplab.local" -InstallDNS
+
+**What this does:** Creates a brand-new Active Directory forest and domain named `corplab.local` — swap in whatever domain name you used in Lab 1 if you'd rather keep it consistent — and promotes `dc01` to be its first domain controller. `-InstallDNS` also installs and configures the DNS Server role, which AD requires to function. You'll be prompted to set a **Directory Services Restore Mode (DSRM) password** — a separate recovery password, distinct from your admin login; write it down.
+
+**The VM reboots automatically** once the promotion finishes — this is expected. Wait a minute or two, then reconnect via RDP using your domain admin account (e.g., `CORPLAB\azureuser`, depending on your domain name).
+
+**Why redo this at all?** The Windows Event Logs this lab searches in Section 6 (failed logons, lockouts, after-hours activity) come from Windows' Security auditing, which is enabled and most meaningful on a domain controller — every domain logon attempt gets logged centrally. Rebuilding the DC role here means the logs you forward to Splunk reflect real domain authentication activity, not just local machine logins.
 
 ---
 
@@ -379,9 +399,7 @@ Once connected, your terminal prompt changes to show `azureuser@splunk-vm:~$` �
 
 Run these commands inside your SSH session (on the Ubuntu VM):
 
-wget -O splunk-10.2.2-linux-amd64.deb \\
-
-  "https://download.splunk.com/products/splunk/releases/10.2.2/linux/splunk-10.2.2-80b90d638de6-linux-amd64.deb"
+wget -O splunk-10.2.2-linux-amd64.deb "https://download.splunk.com/products/splunk/releases/10.2.2/linux/splunk-10.2.2-80b90d638de6-linux-amd64.deb"
 
 **What this does:**
 
@@ -422,7 +440,6 @@ Splunk takes 30–60 seconds to fully start. When you see `Splunk is now availab
 
 ### 4.5 Enable Splunk to auto-start on reboot
 
-sudo /opt/splunk/bin/splunk enable boot-start
 
 **What this does:** Registers Splunk as a system service so it starts automatically if the VM ever reboots. Without this, you'd have to manually SSH in and start Splunk every time the VM restarts. The command creates a systemd service entry for Splunk.
 
@@ -438,7 +455,7 @@ Log in with the admin credentials you set in Step 4.4. You should see the Splunk
 
 ## SECTION 5 — CONFIGURE DATA INPUTS
 
-Splunk is useless without data. This section gets your Windows Server VM (Lab 1) sending its Windows Event Logs to Splunk.
+Splunk is useless without data. This section gets `dc01` sending its Windows Event Logs to Splunk.
 
 ### 5.1 Configure Splunk to receive data (in the Web UI)
 
@@ -464,11 +481,41 @@ An index is Splunk's named storage bucket — like a database table for your log
 
 **Why a separate index?** When you search, you specify `index=windows_logs` to search only Windows data. If all your logs went into the default index, searches would be slower and harder to scope. Separate indexes also let you set different retention periods per data source.
 
-### 5.3 Install the Universal Forwarder on Windows Server (Lab 1 VM)
+### 5.3 Start dc01 if it's stopped
 
-**Switch to your Windows Server VM now.** Everything in this section happens on the Lab 1 Windows Server, not the Ubuntu Splunk VM. You can RDP into it from your Mac using Microsoft Remote Desktop (free on the Mac App Store).
+Before you can RDP into `dc01`, confirm the VM is actually running. Azure VMs get stopped either by an auto-shutdown schedule or because you deallocated them to avoid ongoing charges — it's normal to find it powered off here if some time has passed since Section 3.6.
 
-On your Windows Server VM:
+**Check its status, from your Mac Terminal:**
+
+az vm list -d -o table
+
+**What this does:** `-d` ("detail") adds extra columns — including power state and public IP — that don't show up in the default output. `-o table` formats the result as a readable table instead of raw JSON. Find `dc01` in the list under `rg-splunk-lab3` and check its `PowerState` column.
+
+**If its `PowerState` shows anything other than `VM running`, start it:**
+
+az vm start --resource-group rg-splunk-lab3 --name dc01
+
+**What this does:** Powers the VM back on (and re-provisions the underlying hardware if it had been deallocated). This takes about 1–2 minutes — you won't see a progress bar, the command just returns when it's done.
+
+**Get the VM's current public IP:**
+
+az vm show -d --resource-group rg-splunk-lab3 --name dc01 --query publicIps -o tsv
+
+**Why check the IP again?** Unless you configured a static public IP, Azure assigns a new one every time you start the VM. You'll use this IP to RDP in below — don't reuse an IP from a previous session.
+
+**Portal alternative:** If you'd rather click than type, open `dc01`'s resource page in the Azure Portal, click **Start** at the top of the page, wait for the status to change to **Running**, then copy the **Public IP address** field from the Overview tab.
+
+**Cost note:** When you're done with this lab session, stop the VM again so it doesn't bill for compute time while idle:
+
+az vm deallocate --resource-group rg-splunk-lab3 --name dc01
+
+**What this does:** `deallocate` (not just `stop`) fully releases the underlying hardware, which is what actually stops Azure from billing you for compute. A plain "stop" from within Windows just shuts down the OS — Azure still reserves and bills for the hardware until you deallocate. **Don't run `az group delete` for this** — deleting the whole `rg-splunk-lab3` resource group would take `splunk-vm` down with it too. Stop each VM individually with `az vm deallocate` when you just want to pause billing between sessions.
+
+### 5.4 Install the Universal Forwarder on dc01
+
+**Switch to `dc01` now.** Everything in this section happens on the domain controller, not the Ubuntu Splunk VM. You can RDP into it from your Mac using Microsoft Remote Desktop (free on the Mac App Store).
+
+On `dc01`:
 
 1. Open a browser and go to: `https://splunk.com/en_us/download/universal-forwarder.html`  
 2. Download the **Windows 64-bit** installer (`.msi` file)  
@@ -481,7 +528,7 @@ On your Windows Server VM:
 
 **What is a Deployment Server?** The Deployment Server (port 8089) is a Splunk management port that lets you remotely push configuration updates to forwarders. You're pointing the forwarder at your Splunk instance so it can receive those updates centrally.
 
-### 5.4 Configure inputs.conf — tell the forwarder what to collect
+### 5.5 Configure inputs.conf — tell the forwarder what to collect
 
 `inputs.conf` is a text configuration file that tells the Universal Forwarder exactly which Windows Event Logs to collect and forward. You create or edit this file on the Windows Server VM.
 
@@ -523,7 +570,7 @@ disabled = 0
 | `[WinEventLog://System]` | Collect the Windows System log (OS-level events: service starts/stops, driver failures, hardware issues). |
 | `[WinEventLog://Application]` | Collect the Windows Application log (events from installed applications). |
 
-### 5.5 Restart the Universal Forwarder to apply inputs.conf
+### 5.6 Restart the Universal Forwarder to apply inputs.conf
 
 On your Windows Server VM, open **PowerShell as Administrator** and run:
 
@@ -791,11 +838,11 @@ az group delete --name rg-splunk-lab3 --yes --no-wait
 
 **What this does:**
 
-- `az group delete --name rg-splunk-lab3` — deletes the entire resource group and everything inside it (the VM, disk, network card, public IP, NSG)  
+- `az group delete --name rg-splunk-lab3` — deletes the entire resource group and **everything inside it**  
 - `--yes` — skips the "are you sure?" confirmation prompt  
 - `--no-wait` — returns your terminal prompt immediately without waiting for the deletion to complete (it runs in the background in Azure)
 
-**Do not delete your Lab 1 Windows Server VM.** It is in a different resource group (`rg-lab1` or similar) and is needed for future labs.
+**Important — this deletes both VMs.** Because `dc01` was rebuilt inside `rg-splunk-lab3` (see the note near the top of this SOP), this command removes `splunk-vm` **and** `dc01` together, along with their disks, network cards, public IPs, the shared VNet, and the NSG. Only run this once you're fully done with the lab and have everything you need (screenshots, exported dashboards, etc.) — there's no separate "keep the DC" option once you delete the resource group. If you want to keep `dc01` around after tearing down Splunk, deallocate it individually first (`az vm deallocate --resource-group rg-splunk-lab3 --name dc01`) and delete only `splunk-vm`'s resources instead of the whole group.
 
 ---
 
@@ -804,5 +851,5 @@ az group delete --name rg-splunk-lab3 --yes --no-wait
 - The Splunk free licence (post-60-day trial) limits indexing to **500MB/day**. A home lab with one Windows Server will typically generate well under 100MB/day — the limit will not be an issue.  
 - All SPL searches in this lab use the `sourcetype=WinEventLog:Security` filter. If you add other data sources in future labs, always specify the sourcetype to keep searches accurate.  
 - Splunk stores its data in `/opt/splunk/var/lib/splunk/`. If you ever need to free disk space on the Ubuntu VM, this is where the indexed data lives.  
-- The Windows Event Log Security audit policy on your DC must have "Logon Events" auditing enabled for EventCode 4624/4625/4740 to appear. This should already be configured from Lab 1.
+- The Windows Event Log Security audit policy on `dc01` must have "Logon Events" auditing enabled for EventCode 4624/4625/4740 to appear. On a freshly promoted domain controller (Section 3.6), default Domain Controller Security Policy already enables this — no extra step needed, but if your searches in Section 6 come back empty, check **Local Group Policy Editor → Computer Configuration → Windows Settings → Security Settings → Local Policies → Audit Policy** and confirm "Audit logon events" is set to Success and Failure.
 

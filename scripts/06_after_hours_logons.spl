@@ -1,0 +1,9 @@
+```After-Hours Logon Activity — extracts the hour from each successful logon and filters
+to before 7 AM or after 7 PM. After-hours service-account activity is normal; after-hours
+interactive or RDP logons from regular users warrant a closer look.```
+
+index=windows_logs sourcetype=WinEventLog:Security EventCode=4624
+| eval hour=strftime(_time, "%H")
+| where hour < 7 OR hour > 19
+| table _time, Account_Name, Workstation_Name, Logon_Type
+| sort -_time
