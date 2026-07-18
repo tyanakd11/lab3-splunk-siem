@@ -4,7 +4,7 @@
 
 > A hands-on SIEM deployment lab demonstrating log collection, security monitoring, and threat detection using Splunk Enterprise on Azure infrastructure.
 
-**Home Lab Series — Lab 3 of 5** · Cloud & SOC Analyst Portfolio Project
+Cloud & SOC Analyst Portfolio Project
 
 ## Overview
 
