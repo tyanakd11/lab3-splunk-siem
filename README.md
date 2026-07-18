@@ -1,5 +1,9 @@
 # Lab 3 — Splunk SIEM & Log Analysis
 
+![Splunk](https://img.shields.io/badge/Splunk-000000?style=for-the-badge&logo=splunk&logoColor=white) ![Azure](https://img.shields.io/badge/Azure-0078D4?style=for-the-badge&logo=microsoftazure&logoColor=white) ![Ubuntu](https://img.shields.io/badge/Ubuntu-E95420?style=for-the-badge&logo=ubuntu&logoColor=white) ![Windows Server](https://img.shields.io/badge/Windows%20Server-0078D4?style=for-the-badge&logo=windows&logoColor=white)
+
+> A hands-on SIEM deployment lab demonstrating log collection, security monitoring, and threat detection using Splunk Enterprise on Azure infrastructure.
+
 **Home Lab Series — Lab 3 of 5** · Cloud & SOC Analyst Portfolio Project
 
 ## Overview
